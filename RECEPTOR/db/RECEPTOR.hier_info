@@ -1,0 +1,29 @@
+|RECEPTOR
+clk => delay.CLK
+reset => presentstate.OUTPUTSELECT
+reset => leds[0]~reg0.ACLR
+reset => leds[1]~reg0.ACLR
+reset => leds[2]~reg0.ACLR
+reset => leds[3]~reg0.ACLR
+reset => leds[4]~reg0.ACLR
+reset => leds[5]~reg0.ACLR
+reset => leds[6]~reg0.ACLR
+reset => leds[7]~reg0.ACLR
+reset => done.ENA
+reset => i[3].ENA
+reset => i[2].ENA
+reset => i[1].ENA
+reset => i[0].ENA
+rx => process_4.IN1
+rx => process_4.IN1
+rx => tmp[8].DATAIN
+leds[0] <= leds[0]~reg0.DB_MAX_OUTPUT_PORT_TYPE
+leds[1] <= leds[1]~reg0.DB_MAX_OUTPUT_PORT_TYPE
+leds[2] <= leds[2]~reg0.DB_MAX_OUTPUT_PORT_TYPE
+leds[3] <= leds[3]~reg0.DB_MAX_OUTPUT_PORT_TYPE
+leds[4] <= leds[4]~reg0.DB_MAX_OUTPUT_PORT_TYPE
+leds[5] <= leds[5]~reg0.DB_MAX_OUTPUT_PORT_TYPE
+leds[6] <= leds[6]~reg0.DB_MAX_OUTPUT_PORT_TYPE
+leds[7] <= leds[7]~reg0.DB_MAX_OUTPUT_PORT_TYPE
+
+

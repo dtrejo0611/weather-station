@@ -1,0 +1,142 @@
+-- Ejemplo de uso del módulo RF HC-12 como receptor
+-- Conectado a la tarjeta Nexys2, usando protocolo UART.
+-- La comunicación con el HC-12 es por RX y TX, similar al HC-06.
+------------------------------------------------------------------------------------------
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.std_logic_arith.all;
+use ieee.std_logic_unsigned.all;
+----------------------------------------------------------
+entity RECEPTOR is
+port(
+    clk     : in std_logic;          -- 50 MHz
+    reset   : in std_logic;          -- Reset
+    rx      : in std_logic;          -- Entrada de datos del módulo HC-12 (RX)
+    leds    : out std_logic_vector(7 downto 0)  -- Salida a LEDs
+);
+end RECEPTOR;
+----------------------------------------------------------
+architecture rx_rf of RECEPTOR is
+    -- FSM states
+    type state_type is (WAIT_FOR_START, RECEIVE_DATA);
+    signal presentstate : state_type := WAIT_FOR_START;  -- Estado presente
+    signal nextstate    : state_type;                    -- Estado futuro
+
+    -- Señales para el control de la recepción
+    signal control : std_logic := '0';      -- Indica cuando ocurre el bit de start
+    signal done    : std_logic := '0';      -- Indica cuando termina la recepción de datos
+    signal tmp     : std_logic_vector(8 downto 0) := "000000000"; -- Registro de datos
+
+    -- Contadores de retardos (para control de muestreo)
+    signal c      : std_logic_vector(9 downto 0) := "1111111111";  -- Contador de retardos (868)
+    signal delay  : std_logic := '0';        -- Reloj de retardo
+    signal c2     : std_logic_vector(1 downto 0) := "11";  -- Contador de muestreo
+    signal capture: std_logic := '0';        -- Reloj de captura
+
+begin
+    -- Proceso de retardo al triple de la frecuencia
+    process(clk)
+    begin
+        if clk'event and clk = '1' then
+            if c < "1101100100" then
+                c <= c + '1';  -- Contador de retardos
+            else
+                c <= (others => '0');
+            end if;
+            delay <= not delay;
+        end if;
+    end process;
+
+    -- Proceso para el contador C2 para la captura de bits
+    process(delay)
+    begin
+        if delay'event and delay = '1' then
+            if c2 > "01" then
+                c2 <= "00";
+            else
+                c2 <= c2 + '1';
+            end if;
+        end if;
+    end process;
+
+    -- Proceso de captura de datos
+    process(c2)
+    begin
+        if c2 = "01" then
+            capture <= '1';  -- Activar captura en el ciclo adecuado
+        else
+            capture <= '0';
+        end if;
+    end process;
+
+    -- FSM para controlar el estado de recepción de datos
+    process(reset, capture)
+    begin
+        if reset = '1' then
+            presentstate <= WAIT_FOR_START;  -- Reset al estado inicial
+        elsif capture'event and capture = '1' then
+            presentstate <= nextstate;  -- Cambio de estado cuando ocurre la captura
+        end if;
+    end process;
+
+    -- Control de transición de estados de la FSM
+    process(presentstate, rx, done)
+    begin
+        case presentstate is
+            when WAIT_FOR_START =>
+                if rx = '1' and done = '0' then
+                    control <= '0';  -- Esperando inicio de la transmisión
+                    nextstate <= WAIT_FOR_START;
+                elsif rx = '0' and done = '0' then
+                    control <= '1';  -- Se ha recibido un bit de inicio
+                    nextstate <= RECEIVE_DATA;
+                else
+                    control <= '0';
+                    nextstate <= WAIT_FOR_START;
+                end if;
+            when RECEIVE_DATA =>
+                if done = '0' then
+                    control <= '1';  -- Continuar recibiendo datos
+                    nextstate <= RECEIVE_DATA;
+                else
+                    control <= '0';  -- Fin de la recepción
+                    nextstate <= WAIT_FOR_START;
+                end if;
+            when others =>
+                nextstate <= WAIT_FOR_START;
+        end case;
+    end process;
+
+    -- Proceso para capturar los datos recibidos
+    process(capture)
+    begin
+        if capture'event and capture = '1' then
+            if control = '1' and done = '0' then
+                tmp <= rx & tmp(8 downto 1);  -- Captura el bit de datos
+            end if;
+        end if;
+    end process;
+
+    -- Proceso que cuenta los bits y muestra los datos en los LEDs
+    process(capture, control, reset)
+    variable i : std_logic_vector(3 downto 0) := "0000";  -- Contador de bits recibidos
+    begin
+        if reset = '1' then
+            leds <= x"00";  -- Apagar LEDs en caso de reset
+        elsif capture'event and capture = '1' then
+            if control = '1' then
+                if i >= "1001" then
+                    i := x"0";  -- Resetear contador de bits
+                    done <= '1';  -- Señal de fin de recepción
+                    leds <= tmp(8 downto 1);  -- Mostrar datos en LEDs
+                else
+                    i := i + '1';  -- Incrementar contador de bits
+                    done <= '0';
+                end if;
+            else
+                done <= '0';
+            end if;
+        end if;
+    end process;
+
+end rx_rf;

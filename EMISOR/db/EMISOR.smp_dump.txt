@@ -1,0 +1,14 @@
+
+State Machine - |EMISOR|nextstate
+Name nextstate.STOP nextstate.DATA nextstate.START nextstate.IDLE 
+nextstate.IDLE 0 0 0 0 
+nextstate.START 0 0 1 1 
+nextstate.DATA 0 1 0 1 
+nextstate.STOP 1 0 0 1 
+
+State Machine - |EMISOR|presentstate
+Name presentstate.STOP presentstate.DATA presentstate.START presentstate.IDLE 
+presentstate.IDLE 0 0 0 0 
+presentstate.START 0 0 1 1 
+presentstate.DATA 0 1 0 1 
+presentstate.STOP 1 0 0 1 
