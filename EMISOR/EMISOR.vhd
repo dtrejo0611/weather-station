@@ -1,64 +1,156 @@
 library IEEE;
 use IEEE.STD_LOGIC_1164.ALL;
-use IEEE.STD_LOGIC_ARITH.ALL;
-use IEEE.STD_LOGIC_UNSIGNED.ALL;
+use IEEE.NUMERIC_STD.ALL;
 
-entity EMISOR is
-    Port ( clk : in STD_LOGIC;            -- Reloj del sistema
-           reset : in STD_LOGIC;          -- Señal de reset
-           tx_data : in STD_LOGIC_VECTOR(7 downto 0); -- Datos a transmitir
-           start_tx : in STD_LOGIC;       -- Señal para iniciar la transmisión
-           tx : out STD_LOGIC);            -- Pin de transmisión (TX)
+entity EMISOR IS
+port(
+    azul, rojo: out std_logic;
+    RESET: in std_logic;
+    CLK: in STD_LOGIC;
+    DIP_SWITCH: in STD_LOGIC_VECTOR (7 downto 0);
+    reloj_adc: out std_logic;
+    LCD_RS: out STD_LOGIC; -- del LCD (JC4)
+    LCD_RW: out STD_LOGIC; -- read/write del LCD (JC5)
+    LCD_E: out STD_LOGIC;  -- enable del LCD (JC6)
+    DATA: out STD_LOGIC_VECTOR (7 downto 0); -- bus de datos de la LCD
+    TX: out STD_LOGIC 
+);
 end EMISOR;
 
 architecture Behavioral of EMISOR is
-	 signal baud_div : integer := 0;
-    signal baud_rate_counter : integer := 0;
-    signal tx_reg : STD_LOGIC_VECTOR(9 downto 0); -- 1 bit start + 8 bits de datos + 1 bit de parada
-    signal tx_busy : STD_LOGIC := '0';
-    constant baud_rate : integer := 9600;
-    constant clock_freq : integer := 50000000; -- Asumimos un reloj de 50 MHz
+    signal ct, dt, ut: std_logic_vector(7 downto 0);
+    signal tx_in_s, rx_in_s: std_logic;
+    signal tx_fin_s, rx: std_logic;
+    signal datain_s, dout_s: std_logic_vector (7 downto 0);
+    
+    constant COUNTER_MAX : integer := 24_999_999;
+    
+    type STATE_type is (ASIGNA, ENVIA);
+    signal STATE, NextState_STATE: STATE_type;
+    
+    signal counter : integer range 0 to COUNTER_MAX := 0;
+    signal toggle : STD_LOGIC := '0';
+
+    -- Declaración de componentes
+    component RS232 is
+    generic(
+        FPGA_CLK : integer := 50000000;
+        BAUD_RS232 : integer := 9600
+    );
+    port(
+        CLK : in std_logic;
+        RX : in std_logic;
+        TX_INI : in std_logic;
+        DATAIN : in std_logic_vector(7 downto 0);
+        TX_FIN : out std_logic;
+        TX : out std_logic;
+        RX_IN : out std_logic;
+        DOUT : out std_logic_vector(7 downto 0)
+    );
+    end component RS232;
 
 begin
+    -- COMPONENTE PARA LA COMUNICACIÓN RS232
+    u1: rs232 generic map(
+        FPGA_CLK => 50_000_000,
+        BAUD_RS232 => 9600
+    )
+    port map(
+        CLK => CLK,
+        RX => rx, -- rx interno no conectado a puerto físico en emisor según diagrama
+        TX_INI => tx_in_s,
+        TX_FIN => tx_fin_s,
+        TX => TX,
+        RX_IN => rx_in_s,
+        DATAIN => datain_s,
+        DOUT => dout_s
+    );
 
-    -- Generador de la tasa de baudios (divisor de frecuencia)
-    process(clk, reset)
+    -- Máquina de estados principal
+    STATE_NextState: process (STATE, TX_FIN_s, DIP_SWITCH)
     begin
-        if reset = '0' then
-            baud_rate_counter <= 0;
-        elsif rising_edge(clk) then
-            if baud_rate_counter = (clock_freq / baud_rate) - 1 then
-                baud_rate_counter <= 0;
-            else
-                baud_rate_counter <= baud_rate_counter + 1;
-            end if;
-        end if;
-    end process;
-
-    -- Transmisor UART
-    process(clk, reset)
-    begin
-        if reset = '0' then
-            tx_busy <= '0';
-            tx_reg <= (others => '1'); -- Línea en estado '1' (idle)
-            tx <= '1'; -- Estado idle (sin transmisión)
-        elsif rising_edge(clk) then
-            if baud_rate_counter = 0 then
-                if start_tx = '0' and tx_busy = '0' then
-                    -- Iniciar transmisión de datos
-                    tx_reg <= '0' & tx_data & '1'; -- Start bit + datos + stop bit
-                    tx_busy <= '1';
-                elsif tx_busy = '1' then
-                    -- Enviar un bit de tx_reg
-                    tx <= tx_reg(0); -- Enviar el bit menos significativo
-                    tx_reg <= tx_reg(9 downto 1) & '1'; -- Shift de bits
-                    if tx_reg(8 downto 0) = "111111111" then
-                        -- Transmisión completa
-                        tx_busy <= '0';
-                    end if;
+        NextState_STATE <= STATE; 
+        case STATE is
+            when ASIGNA =>
+                DATAIN_S <= DIP_SWITCH;
+                NextState_STATE <= ENVIA;
+            when ENVIA =>
+                if TX_FIN_s = '0' then
+                    NextState_STATE <= ENVIA;
+                    TX_IN_s <= '1';
+                elsif TX_FIN_s = '1' then
+                    NextState_STATE <= ASIGNA;
+                    TX_IN_s <= '0';
                 end if;
+            when others =>
+                null;
+        end case;
+    end process;
+
+    u2: entity work.convtemp port map(
+        TEMP => DIP_SWITCH,
+        ct => ct,
+        dt => dt,
+        ut => ut
+    );
+
+    u3: entity work.LCD port map(
+        CLOCK => CLK,
+        REINI => reset,
+        LCD_RS => LCD_RS,
+        LCD_RW => LCD_RW,
+        LCD_E => LCD_E,
+        DATA => DATA,
+        ct => ct,
+        dt => dt,
+        ut => ut
+    );
+
+    -- Lógica secuencial de estado
+    STATE_CurrentState: process (clk)
+    begin
+        if rising_edge(clk) then
+            STATE <= NextState_STATE;
+        end if;
+    end process;
+
+    -- Generador de reloj para ADC (toggle)
+    adc: process (clk)
+    begin
+        if rising_edge(clk) then
+            if counter = COUNTER_MAX then
+                counter <= 0;
+                -- Toggle logic
+                if toggle = '0' then 
+                    toggle <= '1'; 
+                else 
+                    toggle <= '0'; 
+                end if;
+            else
+                counter <= counter + 1;
+            end if;
+            
+            -- Lógica alternativa del PDF para toggle
+            if counter < COUNTER_MAX / 2 then
+                toggle <= '0';
+            else
+                toggle <= '1';
             end if;
         end if;
     end process;
+
+    -- Control de LEDs
+    process (DIP_SWITCH)
+    begin
+        if DIP_SWITCH < "01100100" then -- Comparación con 100 decimal (aprox)
+            azul <= '1';
+            rojo <= '0';
+        else
+            azul <= '0';
+            rojo <= '1';
+        end if;
+    end process;
+
+    reloj_adc <= toggle;
 
 end Behavioral;

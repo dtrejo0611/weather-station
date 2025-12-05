@@ -1,157 +1,124 @@
-------------------------------------------------------------------------------------------
--- Ejemplo de uso del módulo bluetooth HC06 como receptor
--- Conectado a la tarjeta Nexys2, usando protocolo RS-232 y
--- una aplicación de celular comercial que envía código ASCII.
-------------------------------------------------------------------------------------------
+library IEEE;
+use IEEE.std_logic_1164.all;
+use IEEE.std_logic_unsigned.all;
+use IEEE.numeric_std.all;
 
-library ieee;
-use ieee.std_logic_1164.all;
-use ieee.std_logic_arith.all;
-use ieee.std_logic_unsigned.all;
-
-----------------------------------------------------------
 entity RECEPTOR is
-    port(
-        clk    : in std_logic;                -- 50 MHz
-        reset  : in std_logic;                -- Reset
-        rx     : in std_logic;                -- Entrada de datos del módulo Bluetooth (a DO)
-        leds   : out std_logic_vector(7 downto 0)  -- Salida a LEDs
-    );
+port(
+    azul, rojo: out std_logic;
+    reset: in std_logic;
+    CLK: in STD_LOGIC; -- Reloj principal
+    LEDS: out STD_LOGIC_VECTOR (7 downto 0);
+    LCD_RS: out STD_LOGIC; -- del LCD (JC4)
+    LCD_RW: out STD_LOGIC; -- read/write del LCD (JC5)
+    LCD_E: out STD_LOGIC;  -- enable del LCD (JC6)
+    DATA: out STD_LOGIC_VECTOR (7 downto 0); -- bus de datos de la LCD
+    RX: in STD_LOGIC -- Entrada de datos del receptor
+);
 end RECEPTOR;
 
-----------------------------------------------------------
-architecture rx of RECEPTOR is
-    -- FSM states
-    type state_type is (EDO_1, EDO_2);
-    signal presentstate : state_type := EDO_1;  -- Estado presente
-    signal nextstate    : state_type;           -- Estado futuro
+architecture Behavioral of RECEPTOR is
+    -- Señales internas
+    signal tx_in_s, rx_in_s: STD_LOGIC; 
+    signal tx_fin_s, tx: STD_LOGIC; 
+    signal asigna_led: std_logic_vector (7 downto 0);
+    signal datain_s, dout_s: STD_LOGIC_VECTOR (7 downto 0);
+    signal ct, dt, ut: std_logic_vector(7 downto 0);
+    
+    type Sreg0_type is (RECIBE, MUESTRA);
+    signal Sreg0, NextState_Sreg0: Sreg0_type;
 
-    -- Señales
-    signal control : std_logic := '0';          -- Indica cuando ocurre el bit de start
-    signal done    : std_logic := '0';          -- Indica cuando termina la recepción de datos
-    signal tmp     : std_logic_vector(8 downto 0) := "000000000"; -- Registro de datos
-
-    -- Contadores para los retardos
-    -- signal i : std_logic_vector(3 downto 0) := "0000"; -- Contador de los bits recibidos
-    signal c      : std_logic_vector(9 downto 0) := "1111111111";  -- Contador de retardos (868)
-    signal delay  : std_logic := '0';          -- Reloj de C2
-    signal c2     : std_logic_vector(1 downto 0) := "11";           -- Contador de muestreo
-    signal capture: std_logic := '0';          -- Reloj de captura
+    component RS232 is
+    generic(
+        FPGA_CLK: integer := 50000000;
+        BAUD_RS232: integer := 9600
+    );
+    port(
+        CLK: in std_logic;
+        RX: in std_logic;
+        TX_INI: in std_logic;
+        DATAIN: in std_logic_vector(7 downto 0);
+        TX_FIN: out std_logic;
+        TX: out std_logic;
+        RX_IN: out std_logic;
+        DOUT: out std_logic_vector(7 downto 0)
+    );
+    end component RS232;
 
 begin
-    ----------------------------- Proceso de retardo
-    -- Proceso de retardo al triple de la frecuencia
-    process(clk)
-    begin
-        if clk'event and clk = '1' then
-            if c < "1101100100" then
-                c <= c + '1';  -- 868
-            else
-                c <= (others => '0');
-            end if;
-            delay <= not delay;
-        end if;
-    end process;
+    u1: RS232 generic map(
+        FPGA_CLK => 50_000_000,
+        BAUD_RS232 => 9600
+    )
+    port map(
+        CLK => CLK,
+        RX => RX,
+        TX_INI => tx_in_s,
+        TX_FIN => tx_fin_s,
+        TX => TX, -- No se utiliza transmisión
+        RX_IN => rx_in_s,
+        DATAIN => datain_s,
+        DOUT => dout_s
+    );
 
-    ----------------------------- Proceso para el contador C2
-    -- Proceso para el contador C2 para la captura
-    process(delay)
-    begin
-        if delay'event and delay = '1' then
-            if c2 > "01" then
-                c2 <= "00";  -- Control de muestreo
-            else
-                c2 <= c2 + '1';
-            end if;
-        end if;
-    end process;
+    u2: entity work.convtemp port map(
+        TEMP => asigna_led,
+        ct => ct,
+        dt => dt,
+        ut => ut
+    );
 
-    ----------------------------- Proceso para captura
-    -- Proceso para capturar en el bit de en medio (capture)
-    process(c2)
-    begin
-        if c2 = "01" then
-            capture <= '1';  -- Activar captura
-        else
-            capture <= '0';  -- Desactivar captura
-        end if;
-    end process;
+    u3: entity work.LCD port map(
+        CLOCK => CLK,
+        REINI => reset,
+        LCD_RS => LCD_RS,
+        LCD_RW => LCD_RW,
+        LCD_E => LCD_E,
+        DATA => DATA,
+        ct => ct,
+        dt => dt,
+        ut => ut
+    );
 
-    ----------------------------- FSM para controlar la recepción
-    -- FSM
-    process(reset, capture)
+    -- Lógica de Estado Siguiente
+    Sreg0_NextState: process (Sreg0, RX_IN_S, dout_s)
     begin
-        if capture'event and capture = '1' then
-            if reset = '0' then
-                presentstate <= EDO_1;  -- Reset al estado inicial
-            else
-                presentstate <= nextstate;
-            end if;
-        end if;
-    end process;
-
-    ----------------------------- Transición de estados de la FSM
-    process(presentstate, rx, done)
-    begin
-        case presentstate is
-            when EDO_1 =>
-                if rx = '1' and done = '0' then
-                    control <= '0';  -- Esperando inicio de la transmisión
-                    nextstate <= EDO_1;
-                elsif rx = '0' and done = '0' then
-                    control <= '1';  -- Se ha recibido un bit de inicio
-                    nextstate <= EDO_2;
-                else
-                    control <= '0';
-                    nextstate <= EDO_1;
+        NextState_Sreg0 <= Sreg0;
+        case Sreg0 is
+            when RECIBE =>
+                if RX_IN_S = '1' then
+                    NextState_Sreg0 <= MUESTRA;
+                elsif RX_IN_S = '0' then
+                    NextState_Sreg0 <= RECIBE;
                 end if;
-
-            when EDO_2 =>
-                if done = '0' then
-                    control <= '1';  -- Continuar recibiendo datos
-                    nextstate <= EDO_2;
-                else
-                    control <= '0';  -- Fin de la recepción
-                    nextstate <= EDO_1;
-                end if;
-
+            when MUESTRA =>
+                asigna_led <= DOUT_S;
+                NextState_Sreg0 <= RECIBE;
             when others =>
-                nextstate <= EDO_1;
+                null;
         end case;
     end process;
 
-    ----------------------------- Proceso de recepción de datos
-    -- Proceso de recepción de datos
-    process(capture)
+    -- Lógica de Estado Actual
+    Sreg0_CurrentState: process (clk)
     begin
-        if capture'event and capture = '1' then
-            if control = '1' and done = '0' then
-                tmp <= rx & tmp(8 downto 1);  -- Captura rx
-            end if;
+        if rising_edge(clk) then
+            Sreg0 <= NextState_Sreg0;
         end if;
     end process;
 
-    ----------------------------- Proceso que cuenta los bits recibidos
-    -- Proceso que cuenta los bits que llegan (9 bits)
-    process(capture, control, reset)
-    variable i : std_logic_vector(3 downto 0) := "0000";  -- Contador de los bits recibidos
+    -- Control de LEDs
+    process (asigna_led)
     begin
-        if reset = '0' then
-            leds <= x"00";  -- Apagar LEDs en caso de reset
-        elsif capture'event and capture = '1' then
-            if control = '1' then
-                if (i >= "1001") then
-                    i := x"0";  -- Resetear contador de bits
-                    done <= '1';  -- Señal de fin de recepción
-                    leds <= tmp(8 downto 1);  -- Mostrar datos en LEDs
-                else
-                    i := i + '1';  -- Incrementar contador de bits
-                    done <= '0';
-                end if;
-            else
-                done <= '0';
-            end if;
+        if asigna_led < "01100100" then
+            azul <= '1';
+            rojo <= '0';
+        else
+            azul <= '0';
+            rojo <= '1';
         end if;
     end process;
+    
+    LEDS <= asigna_led; -- Asignación faltante inferida para visualización en LEDs
 
-end rx; -- Fin de la arquitectura
+end Behavioral;
